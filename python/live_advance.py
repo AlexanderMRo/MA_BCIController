@@ -1,5 +1,7 @@
 import cortex
 from cortex import Cortex
+import vgamepad as vg
+import time
 
 class LiveAdvance():
     """
@@ -227,13 +229,26 @@ class LiveAdvance():
         data = kwargs.get('data')
         # print('mc data: {}'.format(data))
 
+
+
         # this WORKS! CCCC: might go for this route at the moment (or make it right from the start ofc)
         # now we can use this data to emulate a keypress or a controller inout directly c: (or with
         # another written method if necessary)
+        global locked
         if data['action'] == 'neutral':
             print('Zen')
-        elif data['action'] == 'left' and data['power']>=0.5:
+
+
+        elif data['action'] == 'left' and data['power']>=0.7:
+            gamepad.update()
             print('left!')
+            gamepad.press_button(button=vg.DS4_BUTTONS.DS4_BUTTON_SHOULDER_RIGHT)
+            gamepad.update()
+            time.sleep(0.5)
+            gamepad.release_button(button=vg.DS4_BUTTONS.DS4_BUTTON_SHOULDER_RIGHT)
+            gamepad.update()
+            time.sleep(0.5)
+
 
         # (high prio)
         # could feed data into a method here and then do stuff depending on it
@@ -304,13 +319,42 @@ def main():
     your_app_client_id = 'hj2ixZ1W7tfvrw3in3uJmUDAwLz517pXSjln8bzy'
     your_app_client_secret = 'PH2qthEBBthf1hXYZ6QAbOJNaEDoyMh2l1L7eLX1ZCbPjzWbpCjWrtVgc4iiBPK9MH6iRMk87iteRJDigvAGvInHroEWoU6l5nol1NfxDqX4HgO3NZ4dz9COJJ7stCsN'
 
+    global gamepad, locked
+    # gamepad=vg.VX360Gamepad()
+    gamepad=vg.VDS4Gamepad()
+
+    locked = False
+    time.sleep(6)
+
     # Init live advance
     l = LiveAdvance(your_app_client_id, your_app_client_secret)
 
     trained_profile_name = 'AR' # Please set a trained profile name here
     l.start(trained_profile_name)
 
+    # xbox (scrapped, seems to be performing slower!)
 
+
+    # ps4
+    # time.sleep(6)
+    # gamepad.press_button(button=vg.DS4_BUTTONS.DS4_BUTTON_SQUARE)
+    # gamepad.update()
+    # time.sleep(0.5)
+    # gamepad.release_button(button=vg.DS4_BUTTONS.DS4_BUTTON_SQUARE)
+    # gamepad.update()
+    # time.sleep(0.5)
+    # gamepad.press_button(button=vg.DS4_BUTTONS.DS4_BUTTON_SQUARE)
+    # gamepad.update()
+    # time.sleep(0.5)
+    # gamepad.release_button(button=vg.DS4_BUTTONS.DS4_BUTTON_SQUARE)
+    # gamepad.update()
+    # time.sleep(0.5)
+    # gamepad.press_button(button=vg.DS4_BUTTONS.DS4_BUTTON_SQUARE)
+    # gamepad.update()
+    # time.sleep(0.5)
+    # gamepad.release_button(button=vg.DS4_BUTTONS.DS4_BUTTON_SQUARE)
+    # gamepad.update()
+    # time.sleep(0.5)
 
 if __name__ =='__main__':
     main()

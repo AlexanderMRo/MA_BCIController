@@ -156,7 +156,8 @@ class Cortex(Dispatcher):
         parent_dir_path = file_dir_path.parent
         
         certificate_path = Path(parent_dir_path, 'certificates', 'rootCA.pem')
-        sslopt = {'ca_certs': str(certificate_path), "cert_reqs": ssl.CERT_REQUIRED}
+        # sslopt = {'ca_certs': str(certificate_path), "cert_reqs": ssl.CERT_REQUIRED}
+        sslopt = {"cert_reqs": ssl.CERT_NONE}
 
         self.websock_thread  = threading.Thread(target=self.ws.run_forever, args=(None, sslopt), name=thread_name)
         self.websock_thread .start()
