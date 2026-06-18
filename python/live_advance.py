@@ -2,6 +2,8 @@ import cortex
 from cortex import Cortex
 import vgamepad as vg
 import time
+import multiprocessing as mp
+import threading
 
 class LiveAdvance():
     """
@@ -234,20 +236,19 @@ class LiveAdvance():
         # this WORKS! CCCC: might go for this route at the moment (or make it right from the start ofc)
         # now we can use this data to emulate a keypress or a controller inout directly c: (or with
         # another written method if necessary)
-        global locked
+        global mental_command_left
         if data['action'] == 'neutral':
             print('Zen')
+            mental_command_left = False
 
 
-        elif data['action'] == 'left' and data['power']>=0.7:
-            gamepad.update()
+        # restructure this section to fire once asynchunously while the live data is checked in the background
+        # (could also do a while loop to enable continuous attacking,
+        #  -> might even be solvable with a global variable? As in write a function that executes the attacks while
+        # the
+        elif data['action'] == 'left' and data['power']>=0.8:
             print('left!')
-            gamepad.press_button(button=vg.DS4_BUTTONS.DS4_BUTTON_SHOULDER_RIGHT)
-            gamepad.update()
-            time.sleep(0.5)
-            gamepad.release_button(button=vg.DS4_BUTTONS.DS4_BUTTON_SHOULDER_RIGHT)
-            gamepad.update()
-            time.sleep(0.5)
+            mental_command_left = True
 
 
         # (high prio)
@@ -293,6 +294,27 @@ class LiveAdvance():
             print('Get error ' + error_message + ". Disconnect headset to fix this issue for next use.")
             self.c.disconnect_headset()
 
+# should transfer this to its own thread! (with subprocess)
+def listen_for_mental_commands():
+    # global mental_command_left
+
+    while True:
+
+        while mental_command_left:
+            gamepad.update()
+            print('Light attack!')
+            gamepad.press_button(button=vg.DS4_BUTTONS.DS4_BUTTON_SHOULDER_RIGHT)
+            gamepad.update()
+            time.sleep(0.5)
+            gamepad.release_button(button=vg.DS4_BUTTONS.DS4_BUTTON_SHOULDER_RIGHT)
+            gamepad.update()
+            time.sleep(0.5)
+
+        # else:
+            # print('Listening!')
+
+        time.sleep(0.01)
+
 
 # -----------------------------------------------------------
 # 
@@ -319,7 +341,8 @@ def main():
     your_app_client_id = 'hj2ixZ1W7tfvrw3in3uJmUDAwLz517pXSjln8bzy'
     your_app_client_secret = 'PH2qthEBBthf1hXYZ6QAbOJNaEDoyMh2l1L7eLX1ZCbPjzWbpCjWrtVgc4iiBPK9MH6iRMk87iteRJDigvAGvInHroEWoU6l5nol1NfxDqX4HgO3NZ4dz9COJJ7stCsN'
 
-    global gamepad, locked
+    global gamepad, mental_command_left
+    mental_command_left = False
     # gamepad=vg.VX360Gamepad()
     gamepad=vg.VDS4Gamepad()
 
@@ -329,9 +352,20 @@ def main():
     # Init live advance
     l = LiveAdvance(your_app_client_id, your_app_client_secret)
 
-    trained_profile_name = 'AR' # Please set a trained profile name here
-    l.start(trained_profile_name)
+    # TODO Fix threading issue! :,3
 
+    trained_profile_name = 'AR' # Please set a trained profile name here
+
+    # live_listener = mp.Process(target=l.start,args=(trained_profile_name,))
+
+    # listen_for_mental_commands()
+
+    mental_command_listener = threading.Thread(target=listen_for_mental_commands)
+
+    # live_listener.start()
+    mental_command_listener.start()
+
+    l.start(trained_profile_name)
     # xbox (scrapped, seems to be performing slower!)
 
 

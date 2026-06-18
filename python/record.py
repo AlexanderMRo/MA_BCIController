@@ -149,18 +149,18 @@ def main():
     # Enter your application Client ID and Client Secret below.
     # You can obtain these credentials after registering your App ID with the Cortex SDK for development.
     # For instructions, visit: https://emotiv.gitbook.io/cortex-api#create-a-cortex-app
-    your_app_client_id = 'put_your_app_client_id_here'
-    your_app_client_secret = 'put_your_app_client_secret_here'
+    your_app_client_id = 'hj2ixZ1W7tfvrw3in3uJmUDAwLz517pXSjln8bzy'
+    your_app_client_secret = 'PH2qthEBBthf1hXYZ6QAbOJNaEDoyMh2l1L7eLX1ZCbPjzWbpCjWrtVgc4iiBPK9MH6iRMk87iteRJDigvAGvInHroEWoU6l5nol1NfxDqX4HgO3NZ4dz9COJJ7stCsN'
 
     r = Record(your_app_client_id, your_app_client_secret)
 
 
     # input params for create_record. Please see on_create_session_done before running script
-    r.record_title = '' # required param and can not be empty
+    r.record_title = 'test_record' # required param and can not be empty
     r.record_description = '' # optional param
 
     # input params for export_record. Please see on_warn_cortex_stop_all_sub()
-    r.record_export_folder = '' # your place to export, you should have write permission, example on desktop
+    r.record_export_folder = 'Emotif BCI data' # your place to export, you should have write permission, example on desktop
     r.record_export_data_types = ['EEG', 'MOTION', 'PM', 'BP']
     r.record_export_format = 'CSV'
     r.record_export_version = 'V2'
