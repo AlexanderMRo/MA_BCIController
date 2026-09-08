@@ -42,10 +42,14 @@ EMOTIV_CHANNELS = ["AF3", "F7", "F3", "FC5", "T7", "P7", "O1",
 # Subject recordings (EDF data/<Subject> Recordings EDF+): per subject, 5
 # trials of right-hand movement ("LA" = Light Attack, R Arm keystroke marker)
 # and 5 trials of left-hand movement ("Estus" = Estus flask, L Arm keystroke
-# marker), one marker per file. There is no dedicated "neutral" recording, so
-# a neutral window is carved out of each file's own pre-marker baseline.
+# marker). There is no dedicated "neutral" recording, so a neutral window is
+# carved out of each file's own pre-marker baseline -- plus, for any file
+# whose marker csv has extra rows before the movement cue (an explicit
+# "Eyes_Opened" resting-state segment), several extra non-overlapping neutral
+# windows are carved from that segment too (see load_edf_data).
 # ---------------------------------------------------------------------------
-EDF_ROOT = Path("EDF data") / "LG Recordings EDF+"  # this subject's export folder
+EDF_DATA_ROOT = Path("EDF data")
+EDF_ROOT = EDF_DATA_ROOT / "LG Recordings EDF+"  # your own recordings -- the deployment target
 FILENAME_LABEL_TOKENS = {
     "LA": "right",     # "Light Attack (R Arm)" marker, marker_value=10
     "Estus": "left",   # "Estus (L Arm)" marker, marker_value=20
@@ -53,6 +57,21 @@ FILENAME_LABEL_TOKENS = {
 CLASS_TO_ID = {"neutral": 0, "left": 1, "right": 2}
 NEUTRAL_BUFFER_SECONDS = 0.3  # gap kept before the marker so anticipatory
                                # motor activity doesn't leak into "neutral"
+
+
+def discover_auxiliary_subject_roots(edf_data_root=EDF_DATA_ROOT, exclude_root=EDF_ROOT):
+    """
+    Finds every other subject's "<Name> Recordings EDF+" folder under
+    `edf_data_root` (skipping `exclude_root`, your own data) -- so dropping a
+    new subject's exported folder into EDF data/ is enough to have them
+    picked up as auxiliary pretraining/pooling data next run, with no code
+    changes needed (see __main__'s arms (c)/(d)).
+    """
+    exclude_root = Path(exclude_root).resolve()
+    return [
+        folder for folder in sorted(Path(edf_data_root).glob("*Recordings EDF+"))
+        if folder.resolve() != exclude_root
+    ]
 
 # ---------------------------------------------------------------------------
 # 1. Load your Emotiv data
@@ -79,7 +98,8 @@ def load_emotiv_data(X_path, y_path):
 # 1b. Load a subject's .edf recording folder directly (no manual pre-conversion)
 # ---------------------------------------------------------------------------
 def load_edf_data(root_dir=EDF_ROOT, window_seconds=WINDOW_SECONDS,
-                   neutral_buffer_seconds=NEUTRAL_BUFFER_SECONDS, sample_freq=SAMPLE_FREQ):
+                   neutral_buffer_seconds=NEUTRAL_BUFFER_SECONDS, sample_freq=SAMPLE_FREQ,
+                   return_stats=False):
     """
     Iterates every .edf recording for a subject in `root_dir` (see record.py /
     marker.py), each paired with a same-named `..._intervalMarker.csv` holding
@@ -87,6 +107,12 @@ def load_edf_data(root_dir=EDF_ROOT, window_seconds=WINDOW_SECONDS,
     epochs: a movement epoch starting at the marker, labeled from the filename
     via `FILENAME_LABEL_TOKENS` ("LA" -> right, "Estus" -> left), and a neutral
     epoch taken from the pre-marker baseline of that same recording.
+
+    return_stats : bool, optional
+        If True, also return the per-channel mean/std used to standardize X.
+        A live inference window can't be standardized against itself (n=1),
+        so it must reuse these training-time stats instead -- see
+        BCI_Controller_live.py.
 
     Returns
     -------
@@ -97,6 +123,8 @@ def load_edf_data(root_dir=EDF_ROOT, window_seconds=WINDOW_SECONDS,
         the movement and neutral epoch pulled from the same recording share
         the same id, so this can be used as the `groups` argument to
         `cross_validate` for leave-one-recording-out validation.
+    channel_mean, channel_std : ndarray, shape (N_CHANNELS,), float32
+        Only returned if `return_stats=True`.
     """
     window_samples = int(round(window_seconds * sample_freq))
     edf_paths = sorted(Path(root_dir).glob("*.edf"))
@@ -122,7 +150,11 @@ def load_edf_data(root_dir=EDF_ROOT, window_seconds=WINDOW_SECONDS,
         if not marker_rows:
             print(f"[load_edf_data] skipping {edf_path.name}: marker csv has no rows.")
             continue
-        marker_onset_s = float(marker_rows[0]["latency"])
+        # Some recordings prepend resting-state baseline rows (Eyes_Opened /
+        # Eyes_Closed) before the actual movement cue -- the cue is always
+        # the *last* row, not the first (see the "Eyes_Opened" handling below
+        # for how the preceding rows get used instead of ignored).
+        marker_onset_s = float(marker_rows[-1]["latency"])
 
         raw = mne.io.read_raw_edf(edf_path, preload=True, verbose=False)
         raw.pick(EMOTIV_CHANNELS)  # keep EEG sensors only, in a fixed order
@@ -155,6 +187,28 @@ def load_edf_data(root_dir=EDF_ROOT, window_seconds=WINDOW_SECONDS,
             recording_id_list.append(recording_idx)
             print(f"[load_edf_data]   -> neutral epoch [{neutral_start}:{neutral_end}] labeled 'neutral'")
 
+        # Bonus neutral epochs: any "Eyes_Opened" resting-state row before the
+        # movement cue (see marker_onset_s above) gets carved into several
+        # non-overlapping windows instead of just the single pre-marker one.
+        # "Eyes_Closed" segments are deliberately skipped -- closed-eyes rest
+        # has a strong posterior alpha rhythm that isn't representative of
+        # "neutral" during actual eyes-open gameplay.
+        for baseline_row in marker_rows[:-1]:
+            if baseline_row["type"] != "Eyes_Opened":
+                continue
+            baseline_start = int(round(float(baseline_row["latency"]) * sample_freq))
+            baseline_samples = int(round(float(baseline_row["duration"]) * sample_freq))
+            n_extra_windows = baseline_samples // window_samples
+            for window_idx in range(n_extra_windows):
+                window_start = baseline_start + window_idx * window_samples
+                window_end = window_start + window_samples
+                epoch_list.append(eeg_microvolts[:, window_start:window_end])
+                label_list.append(CLASS_TO_ID["neutral"])
+                recording_id_list.append(recording_idx)
+            if n_extra_windows:
+                print(f"[load_edf_data]   -> extracted {n_extra_windows} extra neutral epochs "
+                      f"from 'Eyes_Opened' baseline ({float(baseline_row['duration']):.1f}s)")
+
     X = np.stack(epoch_list, axis=0)
     y = np.array(label_list, dtype=np.int64)
     recording_ids = np.array(recording_id_list, dtype=np.int64)
@@ -162,9 +216,13 @@ def load_edf_data(root_dir=EDF_ROOT, window_seconds=WINDOW_SECONDS,
     # Per-channel standardization, as in `load_emotiv_data`. Done per subject,
     # *before* any pooling across subjects in `load_edf_datasets`, so one
     # subject's baseline offset/scale doesn't bleed into another's.
-    X = (X - X.mean(axis=(0, 2), keepdims=True)) / (X.std(axis=(0, 2), keepdims=True) + 1e-6)
+    channel_mean = X.mean(axis=(0, 2), keepdims=True)
+    channel_std = X.std(axis=(0, 2), keepdims=True) + 1e-6
+    X = (X - channel_mean) / channel_std
     class_counts = {cls: int((y == idx).sum()) for cls, idx in CLASS_TO_ID.items()}
     print(f"[load_edf_data] done: X={X.shape}, class counts={class_counts}")
+    if return_stats:
+        return X, y, recording_ids, channel_mean.reshape(-1), channel_std.reshape(-1)
     return X, y, recording_ids
 
 
@@ -560,7 +618,7 @@ if __name__ == "__main__":
     # Few-shot support set for this subject: 5 right-hand + 5 left-hand
     # movement trials, plus one neutral epoch carved from each recording's
     # own pre-marker baseline (see load_edf_data / EDF_ROOT above).
-    X_subject, y_subject, recording_ids = load_edf_data()
+    X_subject, y_subject, recording_ids, channel_mean, channel_std = load_edf_data(return_stats=True)
     class_counts = {cls: int((y_subject == idx).sum()) for cls, idx in CLASS_TO_ID.items()}
     print(f"Loaded {len(y_subject)} trials: {class_counts}")
 
@@ -596,17 +654,72 @@ if __name__ == "__main__":
     )
     time_bnci = time.time() - t0
 
+    # Auxiliary subjects: every "<Name> Recordings EDF+" folder under
+    # EDF_DATA_ROOT other than your own (EDF_ROOT). Drop a new subject's
+    # exported folder in and it's picked up here automatically -- arms (c)
+    # and (d) below need no edits regardless of how many there are.
+    auxiliary_roots = discover_auxiliary_subject_roots()
+    print(f"\nAuxiliary subjects found: {[root.name for root in auxiliary_roots]}")
+
+    if not auxiliary_roots:
+        print("[main] no auxiliary subject data found -- skipping arms (c)/(d)")
+        acc_auxiliary = acc_pooled = {}
+        time_auxiliary = time_pooled = 0.0
+    else:
+        # -- (c) EEGNet pretrained on auxiliary subjects (same headset/ -----
+        #    protocol as you -- unlike BNCI2014_001's different hardware/
+        #    montage), then frozen-backbone few-shot fine-tuned on this subject
+        print("\n===== (c) EEGNet, pretrained on auxiliary subjects =====")
+        t0 = time.time()
+        X_auxiliary, y_auxiliary, _, _ = load_edf_datasets(auxiliary_roots)
+        auxiliary_model = finetune(build_model(pretrained_path=None), X_auxiliary, y_auxiliary,
+                                    use_augmentation=True, n_augmentation=4, epochs=100, batch_size=8)
+        torch.save(auxiliary_model.state_dict(), "auxiliary_pretrained_eegnet.pt")
+        print(f"[main] auxiliary-pretrained backbone saved to auxiliary_pretrained_eegnet.pt")
+
+        acc_auxiliary = cross_validate(
+            X_subject, y_subject, groups=recording_ids,
+            build_fn=lambda: freeze_backbone(
+                build_model(pretrained_path="auxiliary_pretrained_eegnet.pt"), train_last_n_modules=1
+            ),
+            use_augmentation=True, n_augmentation=4, epochs=100, batch_size=8,
+        )
+        time_auxiliary = time.time() - t0
+
+        # -- (d) Pooled leave-one-recording-out CV across you + auxiliaries --
+        #    A single shared classifier trained/validated across every
+        #    subject's recordings -- tests general data-scaling, not
+        #    personalization to you specifically (that's what (c) is for).
+        print("\n===== (d) EEGNet, random init, pooled across all subjects =====")
+        t0 = time.time()
+        X_pooled, y_pooled, subject_ids_pooled, recording_ids_pooled = load_edf_datasets(
+            [EDF_ROOT] + auxiliary_roots
+        )
+        acc_pooled = cross_validate(
+            X_pooled, y_pooled, groups=recording_ids_pooled,
+            build_fn=lambda: build_model(pretrained_path=None),
+            use_augmentation=True, n_augmentation=4, epochs=100, batch_size=8,
+        )
+        time_pooled = time.time() - t0
+
     # -- Summary -----------------------------------------------------------
     for name, accs, elapsed in [
-        ("EEGNet (random init)", acc_baseline, time_baseline),
+        ("EEGNet (random init, you only)", acc_baseline, time_baseline),
         ("EEGNet (BNCI2014_001-pretrained)", acc_bnci, time_bnci),
+        ("EEGNet (auxiliary-subject-pretrained)", acc_auxiliary, time_auxiliary),
+        ("EEGNet (random init, pooled all subjects)", acc_pooled, time_pooled),
     ]:
+        if not accs:
+            continue
         values = np.array(list(accs.values()))
         print(f"{name:38s} acc={values.mean():.3f} +/- {values.std():.3f}  ({elapsed:.0f}s)")
 
-    # Point this at a checkpoint pretrained on a collective/multi-subject
-    # dataset once you have one; None trains the whole (unfrozen) model
-    # from scratch on just this subject's few-shot data.
+    # Deployment target is a personalized classifier for you (LG), so the
+    # real candidates here are (a), (b), and (c) -- not (d), which measures
+    # a shared classifier instead of personalization. Point this at whichever
+    # pretrained backbone scored best above once you've looked at the
+    # numbers; None trains the whole (unfrozen) model from scratch on just
+    # this subject's few-shot data.
     pretrained_path = None
     model = build_model(pretrained_path=pretrained_path)
     if pretrained_path is not None:
@@ -617,3 +730,9 @@ if __name__ == "__main__":
                      epochs=100, batch_size=8)
 
     torch.save(model.state_dict(), "user_adapted.pt")
+
+    # Saved alongside the model so real-time inference (BCI_Controller_live.py)
+    # can standardize a single live window with the same stats this model was
+    # trained against, instead of ones computed from just that one window.
+    np.savez("user_adapted_norm.npz", mean=channel_mean, std=channel_std)
+    print(f"[main] model saved to user_adapted.pt, normalization stats saved to user_adapted_norm.npz")

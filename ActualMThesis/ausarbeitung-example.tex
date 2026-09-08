@@ -1,0 +1,172 @@
+% **************************************************
+% Document Class Definition
+% **************************************************
+\documentclass[%
+	paper=A4,					% paper size --> A4 is default in Germany
+	twoside=true,				% onesite or twoside printing
+	openright,					% doublepage cleaning ends up right side
+	parskip=full,				% spacing value / method for paragraphs
+	chapterprefix=true,			% prefix for chapter marks
+	11pt,						% font size
+	headings=normal,			% size of headings
+	bibliography=totoc,			% include bib in toc
+	listof=totoc,				% include listof entries in toc
+	titlepage=on,				% own page for each title page
+	%captions=tableabove,		% display table captions above the float env
+	draft=false,				% value for draft version
+]{scrreprt}%
+
+% **************************************************
+% Debug LaTeX Information
+% **************************************************
+%\listfiles
+
+% **************************************************
+% Information and Commands for Reuse
+% **************************************************
+\newcommand{\thesisTitle}{Analysis of algorithms for a faster calibration of Brain-Machine-Interfaces for their use in video games [working title]}
+\newcommand{\thesisSubtitle}{Master Thesis}
+\newcommand{\thesisName}{Alexander Rogausch}
+\newcommand{\thesisSubject}{seminar paper}
+\newcommand{\thesisDate}{xxth of xx, 2026}
+\newcommand{\thesisUniversity}{\protect{University of Bayreuth}}
+\newcommand{\thesisUniversityDepartment}{AI5 -- Visual Computing}
+\newcommand{\thesisUniversityCity}{Bayreuth}
+
+% **************************************************
+% Load and Configure Packages
+% **************************************************
+\usepackage[utf8]{inputenc}		% defines file's character encoding
+\usepackage[nenglish]{babel} % babel system, adjust the language of the content
+\usepackage[					% clean thesis style
+	figuresep=colon,%
+	sansserif=false,%
+	hangfigurecaption=false,%
+	hangsection=true,%
+	hangsubsection=true,%
+	colorize=bw,%
+	colortheme=bluemagenta,%
+	bibsys=bibtex,%
+	bibfile=bib-refs,%
+	bibstyle=alphabetic,%
+]{cleanthesis}
+
+\hypersetup{					% setup the hyperref-package options
+	pdftitle={\thesisTitle},	% 	- title (PDF meta)
+	pdfsubject={\thesisSubject},% 	- subject (PDF meta)
+	pdfauthor={\thesisName},	% 	- author (PDF meta)
+	plainpages=false,			% 	-
+	colorlinks=false,			% 	- colorize links?
+	pdfborder={0 0 0},			% 	-
+	breaklinks=true,			% 	- allow line break inside links
+	bookmarksnumbered=true,		%
+	bookmarksopen=true			%
+}
+
+
+
+% ##################### the following lines are only included packages for the example chapter
+%used for examples
+\usepackage{amsmath}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\usepackage{algorithm}
+\usepackage{subcaption}
+\usepackage[noend]{algpseudocode}
+\usepackage[printonlyused]{acronym}  % Abkürzungsverzeichnis [nur verwendete Abkürzungen]
+% ###############################################################################################
+
+
+
+
+% **************************************************
+% Document CONTENT
+% **************************************************
+\begin{document}
+
+% --------------------------
+% rename document parts
+% --------------------------
+%\renewcaptionname{english}{\figurename}{Abb.}
+%\renewcaptionname{ngerman}{\tablename}{Tab.}
+\renewcaptionname{english}{\figurename}{Fig.}
+\renewcaptionname{english}{\tablename}{Tab.}
+
+% --------------------------
+% Front matter
+% --------------------------
+\pagenumbering{roman}			% roman page numbing (invisible for empty page style)
+\pagestyle{empty}				% no header or footers
+\input{content/titlepage}		% INCLUDE: all titlepages
+\cleardoublepage
+
+\pagestyle{plain}				% display just page numbers
+\input{content/abstract}		% INCLUDE: the abstracts (english and german)
+\cleardoublepage
+
+%
+\setcounter{tocdepth}{2}		% define depth of toc
+\tableofcontents				% display table of contents
+\cleardoublepage
+
+% --------------------------
+% Body matter
+% --------------------------
+\pagenumbering{arabic}			% arabic page numbering
+\setcounter{page}{1}			% set page counter
+\pagestyle{maincontentstyle} 	% fancy header and footer
+
+% might need to copy some stufgf from our BA thesis to fot the formalities of the thesis for the current uni!
+
+\input{content/Introduction} % INCLUDE: introduction
+\input{content/Definitions}
+\input{content/RelatedWork}
+\input{content/Approach}
+\input{content/Evaluation}
+\input{content/Results}
+\input{content/Discussion}
+\input{content/Outlook}
+\input{content/Conclusion}
+\cleardoublepage
+%\input{content/examples}
+\cleardoublepage
+
+% should we also have a section about the gerneal fields of applications? Or would that be outside of the scope for this seminar paper
+
+% --------------------------
+% Back matter
+% --------------------------
+{%
+\chapter*{References}
+\addcontentsline{toc}{chapter}{References}
+\setstretch{1.1}
+\renewcommand{\bibfont}{\normalfont\small}
+\setlength{\biblabelsep}{0pt}
+\setlength{\bibitemsep}{0.5\baselineskip plus 0.5\baselineskip}
+\printbibliography[heading=subbibliography, nottype=online]
+\printbibliography[heading=subbibliography, title={Webseiten},type=online,prefixnumbers={@}]
+}
+\cleardoublepage
+
+\addcontentsline{toc}{chapter}{\listfigurename}
+\listoffigures
+\cleardoublepage
+
+\appendix
+\input{content/appendix}
+
+%\addcontentsline{toc}{chapter}{\listtablename}
+%\listoftables
+%\cleardoublepage
+
+\pagestyle{empty}
+\input{content/declaration}
+\clearpage
+\newpage
+\mbox{}
+
+% **************************************************
+% End of Document CONTENT
+% **************************************************
+\end{document}

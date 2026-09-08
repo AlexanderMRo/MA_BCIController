@@ -1,0 +1,114 @@
+\chapter{Approach}
+\label{chap:approach}
+
+This chapter describes the concrete pipeline built for this thesis to investigate whether pretraining on other people's motor imagery recordings can shorten the calibration required from a new BCI user. Sec. \ref{sec:approach:env} lists the hardware and software the pipeline was built and run on, while Sec. \ref{sec:approach:algo} describes the data collection protocol, the preprocessing applied to it, the network architecture used for classification, and the transfer learning, augmentation, training and evaluation procedures built around it.
+% the real-time deployment side of this project (streaming inference and translating classifier output into concrete game-controller input) is deliberately out of scope for this chapter and is covered separately once that part of the system has been evaluated end-to-end
+
+\section{Implementation environment}
+\label{sec:approach:env}
+
+\subsection{Hardware}
+\label{sec:approach:hardware}
+
+Brain activity was recorded using an EMOTIV EPOC X, a 14-channel wireless EEG headset aimed at consumer and research use \cite{EMOTIV:EpocX}. Its electrodes are arranged at the standard 10-20 positions AF3, F7, F3, FC5, T7, P7, O1, O2, P8, T8, FC6, F4, F8 and AF4, and its signal is natively sampled at 256\,Hz internally but exported at an effective rate of 128\,Hz, which is the sampling rate used throughout this thesis for both training data and live inference.
+
+Model training and evaluation were carried out on a workstation equipped with a dedicated NVIDIA GPU \TODO{insert exact GPU model, CPU and RAM}. It is worth noting, however, that the EEGNet configuration used in this thesis (see Sec. \ref{sec:approach:eegnet}) has only a few thousand trainable parameters, so a GPU is a convenience rather than a requirement: every experiment described in this chapter also completes in a matter of minutes on a CPU-only machine.
+
+\subsection{Software}
+\label{sec:approach:software}
+
+The entire pipeline is implemented in Python. EDF recordings are read and manipulated with MNE-Python \cite{gramfort-2013}, which is also used for channel selection, resampling, montage handling and, for the public dataset described in Sec. \ref{sec:approach:data}, spherical-spline interpolation between electrode layouts. The EEGNet model itself, its optimisation loop and its evaluation are built on top of braindecode \cite{schirrmeister-2017}, a deep-learning toolbox for EEG decoding built on PyTorch \cite{paszke-2019}, which additionally provides the on-the-fly data augmentation transforms described in Sec. \ref{sec:approach:augmentation} and a thin wrapper around MOABB \cite{jayaram-2018} used to download the public motor imagery dataset used for one of the transfer learning conditions.
+
+\section{Used Algorithms}
+\label{sec:approach:algo}
+
+Throughout this chapter, the person for whom a personalised classifier is ultimately being built is referred to as the \emph{target subject}. Data from one or more additional volunteers, recorded under the same protocol and with the same headset, but used exclusively to test whether pretraining on someone else's motor imagery helps the target subject's classifier, is referred to as \emph{auxiliary subject data}. At the time of writing, recordings from one auxiliary subject are available; the pipeline described below is deliberately built to pick up recordings from further auxiliary subjects automatically, without requiring any code changes, so that the transfer learning conditions in Sec. \ref{sec:approach:transfer} scale to however many volunteers end up being recorded.
+
+\subsection{Data acquisition and recording protocol}
+\label{sec:approach:data}
+
+Each subject performs ten recording trials in total: five in which they imagine a right-hand movement and five in which they imagine a left-hand movement, with no trial requiring the subject to physically move. Each trial begins with a three-second spoken countdown given by the experimenter, followed by a key press exactly at the moment the subject is instructed to start imagining the cued movement; this key press is written to a marker file alongside the raw recording and is used to align the recorded EEG with the intended cue onset. Individual trials last approximately 12 to 13 seconds, with one exception: the first trial recorded for each class per subject lasts around 60 seconds and additionally contains an explicit eyes-open and an eyes-closed resting-state segment before the movement cue, which are exploited during preprocessing as described below.
+
+Class labels for the movement trials are recovered from the recording protocol rather than the underlying frequency content of the signal: a right-hand trial is marked with a distinct keystroke from a left-hand trial, so the classification problem addressed in this thesis reduces to distinguishing \emph{neutral}, \emph{left-hand motor imagery} and \emph{right-hand motor imagery} from the raw EEG signal, i.e.\ a three-class Motor Imagery (MI) problem in the sense introduced in Sec. \ref{sec:def:motim}.
+
+\subsection{Preprocessing and epoching}
+\label{sec:approach:preprocessing}
+
+Every recording is loaded with MNE-Python, restricted to the 14 EPOC X channels in a fixed order, and resampled to 128\,Hz where necessary. Two kinds of epochs are then cut from each recording:
+
+\begin{itemize}
+    \item A \textbf{movement epoch}, a two-second window starting exactly at the marker onset and labelled \emph{left} or \emph{right} according to which keystroke was used for that trial.
+    \item A \textbf{neutral epoch}, a two-second window ending shortly (300\,ms) before the marker onset. The gap is kept deliberately short but non-zero so that anticipatory motor activity in the moments just before the cue does not leak into the neutral class, while still drawing the neutral epoch from the same recording as the movement epoch rather than from a separate, generic resting-state file.
+\end{itemize}
+
+For the small number of trials per subject that additionally contain an explicit eyes-open resting-state segment (see Sec. \ref{sec:approach:data}), several further non-overlapping neutral windows are cut from that segment as well, increasing the number of neutral examples available for training. The eyes-\emph{closed} segment present in the same trials is deliberately not used for this purpose: closed-eyes rest is known to elicit a strong posterior alpha rhythm that is not representative of the eyes-open, visually attentive state a player is actually in while using the resulting classifier during gameplay.
+
+A two-second window length was chosen as a compromise specific to the real-time application targeted by this thesis: end-to-end responsiveness in a video game is dominated by how much EEG has to be observed before a decision can be made rather than by model inference time, so the window has to stay short, while still needing to be long enough to contain a usable movement epoch and, within the same roughly 12-second recording, a non-overlapping neutral epoch drawn from its own baseline.
+
+Every extracted epoch is standardised per channel (zero mean, unit variance) before being used for training. This standardisation is computed separately for each subject and applied before pooling recordings from different subjects for the transfer learning conditions described below, so that one subject's baseline offset and scale cannot leak into another subject's data. The per-channel mean and standard deviation used for the target subject are additionally kept alongside the final trained model, since a live inference window arriving one at a time during gameplay cannot be standardised against itself.
+
+\subsection{The EEGNet architecture}
+\label{sec:approach:eegnet}
+
+Classification is performed with EEGNet, the compact convolutional architecture for EEG-based BCIs introduced by Lawhern et al. and already described in detail in Sec. \ref{sec:relWork:NN}. This thesis uses braindecode's implementation of the architecture \cite{schirrmeister-2017, lawhern-2018}, configured with $F_1=8$ temporal filters, a depth multiplier of $D=2$ (yielding 16 spatial filters), $F_2=16$ pointwise filters, a temporal kernel length of 64 samples (500\,ms at the 128\,Hz sampling rate used throughout this thesis, matching the half-sampling-rate convention used by Lawhern et al.), a separable-convolution kernel length of 16 samples, average-pooling factors of 4 and 8, and a dropout probability of 0.25 -- corresponding to the higher-capacity ``EEGNet-8,2'' configuration evaluated in the original paper (see Sec. \ref{sec:relWork:NN}). For the 14-channel, three-class, 256-sample (two-second) input used in this thesis, this configuration results in a network with only 1,715 trainable parameters, small enough to be trained from scratch on very few trials per class without immediately overfitting, and cheap enough to evaluate on a single window that its inference cost is negligible against the real-time constraints of the intended application.
+
+\subsection{Transfer learning strategy}
+\label{sec:approach:transfer}
+
+Since only a handful of trials per class are available for the target subject, this thesis investigates whether the resulting classifier can be improved by first pretraining the network on other, larger sources of motor imagery data before fine-tuning it on the target subject. Fine-tuning follows a frozen-backbone strategy common in the EEG transfer learning literature \cite{wu-2020}: after loading a pretrained model, every parameter is frozen except for those of the final classification layer, which is then the only part of the network updated during fine-tuning. With only a few examples per class available for the target subject, updating the entire network risks catastrophically overfitting it to those few trials, whereas freezing the earlier, more general filters and only adapting the final decision layer restricts fine-tuning to comparatively few parameters.
+
+Three training conditions are compared, summarised in Table \ref{tab:approach:arms}. All three use identical model architecture, augmentation and optimisation settings (Secs. \ref{sec:approach:augmentation}, \ref{sec:approach:training}); they differ only in what data, if any, the network is pretrained on before being evaluated on the target subject.
+
+\begin{table}[H]
+    \centering
+    \small
+    \begin{tabular}{|p{2.7cm}|p{3.6cm}|p{6.2cm}|}
+        \hline
+        \textbf{Condition} & \textbf{Pretraining data} & \textbf{Purpose} \\
+        \hline
+        (a) Baseline & none (random initialisation) & Establishes the accuracy a from-scratch, personalised classifier reaches on the target subject alone, as the benchmark the remaining conditions have to beat. \\
+        \hline
+        (b) Cross-dataset transfer & Public motor imagery dataset (Sec. \ref{sec:approach:bnci}), left-/right-hand trials only & Tests whether pretraining on a large, but differently recorded, motor imagery dataset transfers to the target subject's own headset and protocol. \\
+        \hline
+        (c) Cross-subject transfer & Pooled recordings from all available auxiliary subjects (Sec. \ref{sec:approach:data}) & Tests whether pretraining on other people who used the same headset and protocol transfers better than a public, differently recorded dataset. \\
+        \hline
+    \end{tabular}
+    \caption{The three training conditions compared in this thesis, all evaluated with leave-one-recording-out cross-validation on the target subject only (Sec. \ref{sec:approach:evaluation}).}
+    \label{tab:approach:arms}
+\end{table}
+
+For conditions (b) and (c), the network is first pretrained \emph{without} freezing any layers, since at that stage no target-subject data is involved yet and the full network can be updated freely; the backbone is only frozen afterwards, once fine-tuning switches to the few-shot target-subject data. Condition (c) is designed to scale automatically to however many auxiliary subjects have been recorded at the time the pipeline is run, so that recording additional volunteers under the same protocol requires no changes to the training code itself, only additional recordings to be made available to it.
+
+% a fourth condition -- a single, non-personalised classifier trained and cross-validated jointly across the target subject and all auxiliary subjects -- was also implemented and run, but is omitted here: it scored no better than the from-scratch personalised baseline (a) while showing the highest variance of any condition tested, and it was never a deployment candidate to begin with since it does not produce a classifier personalised to the target subject
+
+\subsubsection{Cross-dataset pretraining data}
+\label{sec:approach:bnci}
+
+Condition (b) pretrains on BNCI2014\_001, the motor imagery dataset originally recorded for the fourth BCI Competition \cite{tangermann-2012} and made available through MOABB \cite{jayaram-2018}. Only its left-hand and right-hand trials are used, since its remaining classes (imagined foot and tongue movement) have no counterpart in the three-class problem addressed in this thesis, and the dataset does not contain a resting or neutral condition comparable to the neutral epochs described in Sec. \ref{sec:approach:preprocessing}. Because this dataset was recorded with a different, 22-channel montage rather than the EPOC X's 14 channels, each recording is spatially interpolated onto the EPOC X channel layout with spherical-spline interpolation before use, which is possible because both montages use standard 10-20 electrode positions. As with the target and auxiliary subject data, standardisation is computed per (real) subject before pooling across the public dataset's subjects.
+
+\subsection{Data augmentation}
+\label{sec:approach:augmentation}
+
+With as few as five trials per class for the target subject, even a network as compact as EEGNet has comparatively little raw variety to learn from. To counteract this, training draws on braindecode's on-the-fly data augmentation transforms, which are applied to expand every training batch rather than merely perturbing existing trials in place: alongside every original trial, a configurable number of independently augmented copies of it are added to the same batch, so the effective size of the training set grows with the number of augmented copies requested. Five transforms are combined for this purpose:
+
+\begin{itemize}
+    \item \textbf{FT surrogate}: randomises the phase of the signal's Fourier transform while preserving its power spectrum \cite{schwabedal-2018}.
+    \item \textbf{Smooth time mask}: zeroes out a short, randomly placed, contiguous segment of the trial, encouraging robustness to transient artefacts \cite{cheng-2020}.
+    \item \textbf{Channels dropout}: randomly flattens a subset of channels to zero, encouraging robustness to the noisy or poorly-seated contacts common with a dry-electrode consumer headset \cite{saeed-2020}.
+    \item \textbf{Gaussian noise}: adds independent additive noise to the signal \cite{wang-2018-augmentation}.
+    \item \textbf{Frequency shift}: applies a small random shift to the signal's frequency content, implemented directly in braindecode \cite{schirrmeister-2017}.
+\end{itemize}
+
+Each transform is applied independently with a fixed per-transform probability, so a given augmented copy of a trial may combine several of the five perturbations at once, or none of them.
+
+\subsection{Training procedure}
+\label{sec:approach:training}
+
+All three conditions from Sec. \ref{sec:approach:transfer} are optimised with AdamW \cite{loshchilov-2019}, chosen over plain Adam for its decoupled weight decay term, which acts as a form of regularisation independent of the learning rate; only the parameters left unfrozen for the given condition (see Sec. \ref{sec:approach:transfer}) are passed to the optimiser. During fine-tuning on the target subject, every training batch keeps its unmodified trials and appends several independently augmented copies of them, produced with the transforms described in Sec. \ref{sec:approach:augmentation}, so that the effective batch size scales with the number of augmented copies requested rather than with the number of raw trials alone.
+
+\subsection{Evaluation protocol}
+\label{sec:approach:evaluation}
+
+Because so few recordings exist per subject, this thesis evaluates every condition with leave-one-group-out cross-validation rather than a single train/test split: one group of trials is held out in turn, a freshly (re-)initialised and, where applicable, re-pretrained model is trained on the remainder, and the held-out group is used purely for validation, with no weights ever carried over between folds. As all three conditions are evaluated on the target subject alone, the grouping used is by \emph{recording}, so that the movement and neutral epochs cut from the same recording (Sec. \ref{sec:approach:preprocessing}) are always held out together rather than leaking into both the training and validation split of the same fold; this is commonly referred to as leave-one-recording-out cross-validation. Reported accuracy is always measured against chance level for the three-class problem addressed in this thesis, i.e.\ $\frac{1}{3} \approx 0.333$.
+
+% concrete accuracy numbers, timings and a discussion of which condition was ultimately deployed are deliberately left to the Evaluation and Results chapters rather than reported here, since this chapter describes methodology rather than outcomes
