@@ -1,6 +1,12 @@
 """
 Real-time mental-command -> Xbox 360 button emulation.
 
+This script was originally meant to control a target video game directly
+through its own scripting/input API, but access to that API turned out to
+be restricted. Button presses are instead emulated through a virtual Xbox
+360 controller (vgamepad + the ViGEmBus driver), which any game already
+accepts as ordinary gamepad input, so no per-game integration is needed.
+
 Pipeline: Cortex 'eeg' stream -> sliding 2s window -> trained EEGNet
           (user_adapted.pt) -> debounced button tap via vgamepad.
 

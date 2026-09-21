@@ -13,7 +13,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from braindecode.models import EEGNet  # swap for Labram/BENDR wrapper if desired
+from braindecode.models import EEGNet
 from braindecode.augmentation import (
     AugmentedDataLoader,
     FTSurrogate,
@@ -324,20 +324,18 @@ def load_bnci2014_001(subject_ids, window_seconds=WINDOW_SECONDS, sample_freq=SA
         raw = recording.raw.copy()
         raw.pick("eeg")  # drop EOG/STI channels
         raw.set_montage("standard_1020", match_case=False)
-        # interpolate_to() returns a *new* instance rather than modifying
-        # raw in place (unlike pick/set_montage/resample above) -- must
-        # reassign, or the original (wrong-channel-count) raw silently
-        # passes through untouched. It also drops annotations entirely on
-        # the returned instance (rebuilds via a fresh RawArray internally),
-        # so capture and reapply them -- timing is unaffected since
-        # interpolation only changes channel content, not the time axis.
+        # Caveat 1: interpolate_to() returns a NEW Raw object rather than
+        # modifying raw in place (unlike pick/set_montage/resample above),
+        # so the result must be reassigned or the old, wrong-channel-count
+        # raw silently gets used instead.
+        # Caveat 2: the new Raw also loses all annotations, so save them
+        # first and reattach them afterwards.
         annotations = raw.annotations
         raw = raw.interpolate_to(target_montage, method="spline")
-        # The interpolated raw has no meas_date, making the original
-        # annotations' absolute orig_time ambiguous to reattach -- rebuild
-        # with orig_time=None so onsets are taken relative to the recording
-        # start instead (valid here since interpolation doesn't shift the
-        # time axis). orig_time isn't settable on an existing Annotations.
+        # Reattach with orig_time=None: the interpolated raw has no
+        # meas_date, so the original absolute timestamps no longer apply.
+        # This is safe because interpolation only changes channel content,
+        # not timing, so onsets relative to the recording start still line up.
         raw.set_annotations(mne.Annotations(
             onset=annotations.onset, duration=annotations.duration,
             description=annotations.description, orig_time=None,
@@ -345,19 +343,18 @@ def load_bnci2014_001(subject_ids, window_seconds=WINDOW_SECONDS, sample_freq=SA
         if raw.info["sfreq"] != sample_freq:
             raw.resample(sample_freq)
 
-        # Filter to only the annotations we want *before* parsing events --
-        # events_from_annotations's dict-based event_id filtering chokes on
-        # some non-class annotations present on certain subjects/recordings
-        # (e.g. boundary markers), even though it's documented to just skip
-        # unlisted descriptions.
+        # Drop every annotation except our two classes before parsing events.
+        # Some subjects/recordings carry extra annotations (e.g. boundary
+        # markers) that crash events_from_annotations's built-in filtering,
+        # even though it's documented to just skip unlisted descriptions.
         keep = np.isin(raw.annotations.description, list(BNCI_LABEL_TOKENS.keys()))
         raw.set_annotations(raw.annotations[keep])
 
-        # event_id here must map description -> *integer* code (that's the
-        # MNE contract) -- BNCI_LABEL_TOKENS maps description -> our class
-        # label string instead, so let MNE auto-assign codes (safe now that
-        # annotations are filtered to just left_hand/right_hand) and map
-        # those codes to our labels ourselves below.
+        # MNE requires event_id to map description -> integer code, but
+        # BNCI_LABEL_TOKENS maps description -> our class name string
+        # instead. So let MNE auto-assign codes here (safe now that only
+        # left/right-hand annotations remain) and translate those codes to
+        # our own labels ourselves below.
         events, found_event_id = mne.events_from_annotations(
             raw, event_id="auto", verbose=False
         )
@@ -428,11 +425,10 @@ def freeze_backbone(model, train_last_n_modules=1, module_names=None):
     catastrophic overfitting.
 
     module_names : list[str], optional
-        Unfreeze exactly these top-level named children (e.g. ["final_layer"])
-        instead of using `train_last_n_modules`. Needed for architectures
-        where registration order != execution order -- e.g. InterpolatedLaBraM
-        registers its interpolation layer *last* even though it runs first,
-        so "last N children by position" would unfreeze the wrong module.
+        Unfreeze exactly these named children (e.g. ["final_layer"]) instead
+        of the last `train_last_n_modules` by position. Use this whenever a
+        model's layers aren't registered in the order they actually run, so
+        "the last N modules" would otherwise unfreeze the wrong ones.
     """
     for param in model.parameters():
         param.requires_grad = False
@@ -459,11 +455,11 @@ def freeze_backbone(model, train_last_n_modules=1, module_names=None):
 # ---------------------------------------------------------------------------
 def build_augmentations(sample_freq, window_samples, prob=0.5):
     """
-    Braindecode transforms operate on-the-fly in the DataLoader. Combined with
-    `n_augmentation` in `finetune`, they don't just perturb existing trials in
-    place -- they materialize extra (1 + n_augmentation)x copies per batch,
-    which is what actually grows the usable training set for a few-shot subject.
-    Tune `probability` and magnitudes on a validation subject, not the test user.
+    Five transforms applied on-the-fly by the DataLoader. Paired with
+    `n_augmentation` in `finetune`, each batch keeps the original trials and
+    adds extra augmented copies on top, growing the usable training set
+    rather than just perturbing what's already there. Tune `prob` and the
+    transform magnitudes on a validation subject, never on the actual test user.
     """
     return [
         # Frequency-domain surrogate: preserves power spectrum, randomizes phase.
@@ -486,20 +482,17 @@ def finetune(model, X, y, use_augmentation=True, n_augmentation=4, augmentation_
              epochs=100, batch_size=8, lr=1e-3, sample_freq=SAMPLE_FREQ):
     """
     n_augmentation : int, optional
-        With few-shot data (4-5 trials/class), a handful of real trials is
-        rarely enough to fill a batch with useful variety. Each batch keeps
-        its clean originals and appends `n_augmentation` independently
-        augmented copies, i.e. the effective training set grows by
-        (1 + n_augmentation)x. Set to 0 to fall back to in-place, non-expanding
-        augmentation (batch size unchanged).
+        Number of extra augmented copies added per real trial in each batch,
+        so the effective batch size grows to (1 + n_augmentation)x. Needed
+        because 4-5 real trials per class usually isn't enough variety to
+        train on by itself. Set to 0 to disable.
     augmentation_prob : float, optional
         Per-transform probability passed to `build_augmentations`. Higher
-        means each augmented copy is more heavily perturbed on average.
+        values perturb each augmented copy more heavily.
     sample_freq : float, optional
-        Actual sample rate of `X` -- must match, not just default to the
-        Emotiv pipeline's SAMPLE_FREQ, since `FrequencyShift` computes its
-        shift in Hz. Pass the Labram-path rate (200) when fine-tuning that
-        architecture's 200Hz-resampled data.
+        Sample rate of `X`. Must match the data actually passed in, not just
+        default to SAMPLE_FREQ, since `FrequencyShift` needs the real rate
+        to compute its shift in Hz.
     """
     window_samples = X.shape[-1]
     X_tensor = torch.as_tensor(X)
@@ -562,23 +555,21 @@ def evaluate(model, X, y):
 def cross_validate(X, y, groups, build_fn, use_augmentation=True, n_augmentation=4,
                     augmentation_prob=0.5, epochs=100, batch_size=8, lr=1e-3, sample_freq=SAMPLE_FREQ):
     """
-    Leave-one-group-out cross-validation: every unique value in `groups` is
-    held out exactly once (its trials used only for validation), and a fresh
-    model is trained on the rest -- no weights carry over between folds. Pass
-    `recording_ids` for leave-one-recording-out (the right call with a single
-    subject's data), or `subject_ids` for leave-one-subject-out once you have
-    multiple subjects.
+    Leave-one-group-out cross-validation: each unique value in `groups` is
+    held out once as the validation set, with a fresh model trained from
+    scratch on everything else (no weights carried over between folds). Pass
+    `recording_ids` for leave-one-recording-out (the right choice for a
+    single subject's data), or `subject_ids` for leave-one-subject-out once
+    multiple subjects are available.
 
     build_fn : callable
-        Called with no arguments at the start of every fold; must return a
-        freshly-initialized model (already pretrained/frozen as desired) ready
-        for `finetune`. Keeps this CV loop generic across architectures --
-        e.g. `lambda: build_model(pretrained_path=None)` for a from-scratch
-        EEGNet, or `lambda: freeze_backbone(build_labram_model(), module_names=["final_layer"])`.
+        Called with no arguments at the start of every fold to get a fresh
+        model ready for `finetune`, e.g. `lambda: build_model(pretrained_path=None)`.
+        Keeps this function reusable regardless of which model it's testing.
 
-    With so few trials this is more informative than a single train/test
-    split: it tells you whether the model beats chance (1/N_CLASSES) on
-    unseen trials at all, rather than just watching training loss go down.
+    With only a handful of trials, this is far more informative than a
+    single train/test split: it shows whether the model beats chance
+    (1/N_CLASSES) on unseen trials, not just whether training loss goes down.
 
     Returns
     -------
