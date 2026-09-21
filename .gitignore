@@ -84,3 +84,6 @@ Emotif BCI data/
 # MNE-Python / MOABB dataset cache (should be downloaded on demand, not committed)
 mne_data/
 C-/
+
+# Thesis (worked on in Overleaf, not tracked here)
+ActualMThesis/
